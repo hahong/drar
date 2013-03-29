@@ -230,11 +230,18 @@ def dbox_upload(apicli, src, dst, retry=3, **kwargs):
 
 
 def dbox_upload_once(apicli, src, dst, halg=hashlib.sha224,
-        tmpfnbase='tmp_', move=True):
+        tmpfnbase='tmp_', move=True, overwrite=True):
     try:
+        fsz = my_filesize(src)
+        if dbox_df(apicli) <= fsz:
+            print '*** Not enough dropbox space.  Need free space for:', src
+            raw_input()
+            if dbox_df(apicli) <= fsz:
+                return False, '*** Not enough dropbox space: ' + src
+
         h0 = halg(open(src, 'rb').read()).hexdigest()
         # upload...
-        apicli.put_file(dst, open(src, 'rb'))
+        apicli.put_file(dst, open(src, 'rb'), overwrite=overwrite)
 
         # ...and download to make sure everything is fine.
         tmpfn = tmpfnbase + str(time.time())
@@ -245,10 +252,10 @@ def dbox_upload_once(apicli, src, dst, halg=hashlib.sha224,
         f.close()
 
         h1 = halg(open(tmpfn, 'rb').read()).hexdigest()
+        os.unlink(tmpfn)
         if h0 != h1:
             apicli.file_delete(dst)
             raise ValueError('Not matching hashes: %s != %s' % (h0, h1))
-        os.unlink(tmpfn)
 
         if move:
             os.unlink(src)
@@ -284,6 +291,16 @@ def dbox_exists(apicli, path, info=False):
     except rest.ErrorResponse:
         pass
     return False
+
+
+def dbox_df(apicli):
+    try:
+        inf = apicli.account_info()
+        return inf['quota_info']['quota'] - inf['quota_info']['normal'] - \
+                inf['quota_info']['shared']
+    except rest.ErrorResponse:
+        pass
+    return -1
 
 
 def main_cli(args):

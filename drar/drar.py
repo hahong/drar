@@ -83,7 +83,7 @@ def compress_one_rec(coll, rec, arname=None, wd='tmp',
     # NOT USING COMPRESSION - too slow..
     # r = os.system('cd %s; tar czpf - "%s" | split -a 3 -d -b 200M'
     #         ' - "%s"' % (coll, fn, spbase))
-    r = os.system('cd %s; tar zpf - "%s" | split -a 3 -d -b 200M'
+    r = os.system('cd %s; tar cpf - "%s" | split -a 3 -d -b 200M'
             ' - "%s"' % (coll, fn, spbase))
     return r == normalexit, (cspbase, fn)
 

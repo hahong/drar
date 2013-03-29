@@ -97,10 +97,17 @@ def do_incremental_backup(coll, elog='_elog.pkl', mapext='.map.txt'):
         print '*** No files to backup.  Exiting.'
         return
 
+    # estimated number of depth required to hold all splits
+    nfe = get_estimated_filenum(recs)
+    nd = get_required_depth(nfe)
+
     print '* Starting archiving:', coll
-    print '  - fn_map:', fn_map
-    print '  - fn_elog:', fn_elog
-    print '  - dstbase:', dstbase
+    print '  - fn_map:  ', fn_map
+    print '  - fn_elog: ', fn_elog
+    print '  - dstbase: ', dstbase
+    print '  - # files: ', len(recs)
+    print '  - # sp est:', nfe
+    print '  - # dir d: ', nd
     print
 
     # setup dropbox connection
@@ -108,9 +115,6 @@ def do_incremental_backup(coll, elog='_elog.pkl', mapext='.map.txt'):
     sess = StoredSession(app_key, app_secret, 'dropbox')
     sess.load_creds()
     apicli = client.DropboxClient(sess)
-
-    # estimated number of depth required to hold all splits
-    nd = get_required_depth(get_estimated_filenum(recs))
     dbox_makedirs(apicli, dstbase)
 
     # -- pack one-by-one and upload files

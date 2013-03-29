@@ -64,7 +64,7 @@ def compress_one_rec(coll, rec, arname=None, wd='tmp',
         arname = rec.split()[i_inode]
     elif arname == 'original':
         arname = os.path.basename(fn)
-    spbase = wd + os.sep + arname + '.tgz.'
+    spbase = wd + os.sep + arname + '.tar.'
     cspbase = coll + os.sep + spbase
 
     fullwd = coll + os.sep + wd
@@ -77,10 +77,13 @@ def compress_one_rec(coll, rec, arname=None, wd='tmp',
             if my_freespace(large_tmp) < fsz:
                 return False, '*** Not enough space: ' + fn
         fullwd = large_tmp
-        spbase = os.path.abspath(large_tmp) + os.sep + arname + '.tgz.'
+        spbase = os.path.abspath(large_tmp) + os.sep + arname + '.tar.'
         cspbase = spbase
 
-    r = os.system('cd %s; tar czpf - "%s" | split -a 3 -d -b 200M'
+    # NOT USING COMPRESSION - too slow..
+    # r = os.system('cd %s; tar czpf - "%s" | split -a 3 -d -b 200M'
+    #         ' - "%s"' % (coll, fn, spbase))
+    r = os.system('cd %s; tar zpf - "%s" | split -a 3 -d -b 200M'
             ' - "%s"' % (coll, fn, spbase))
     return r == normalexit, (cspbase, fn)
 
@@ -138,7 +141,7 @@ def do_incremental_backup(coll, elog='_elog.pkl', mapext='.map.txt'):
             coord = get_coord(nd, nf)[:nd]
             dst = (dstbase + '/' + 'd%04d/' * nd) % coord
             dbox_makedirs(apicli, dst)   # make sure there's holding dir
-            dst += 'r%08d_s%04d' % (irec, isp)
+            dst += 'r%08d.tar.s%04d' % (irec, isp)
 
             succ, inf = dbox_upload(apicli, sp, dst)
             nf += 1   # increase regardless of success for safety
@@ -170,7 +173,7 @@ def get_estimated_filenum(recs, div=200 * 1024 * 1024, i_blks=5):
     n = 0
     for rec in recs:
         fs = float(rec.split()[i_blks])
-        n0 = int(fs / div) + 1   # esimated tgz splits for this rec
+        n0 = int(fs / div) + 1   # esimated splits for this rec
         n += n0
     return n
 

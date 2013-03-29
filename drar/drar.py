@@ -6,6 +6,7 @@ import os
 import glob
 import hashlib
 import cPickle as pk
+import sys
 from dropbox import client, session, rest
 from math import log
 
@@ -133,8 +134,7 @@ def do_incremental_backup(coll, elog='_elog.pkl', mapext='.map.txt'):
             errors.append(('compress_one_rec', rec, inf))
             continue
         spb, fn_src = inf
-        if irec % (nr / 10 + 1) == 1:
-            print 'At: %s (%d%%)' % (fn_src, 100 * irec / nr)
+        pp_progress('At (%d%%): %s' % (100 * irec / nr, fn_src))
 
         splits = sorted(glob.glob(spb + '*'))
         for isp, sp in enumerate(splits):
@@ -154,6 +154,7 @@ def do_incremental_backup(coll, elog='_elog.pkl', mapext='.map.txt'):
             mf.flush()
 
     # -- cleanup
+    print '\r' + ' ' * 75
     mf.close()
     dbox_upload(apicli, fn_map, dstbase + '/' + fn_map)
     if len(errors) > 0:
@@ -163,6 +164,14 @@ def do_incremental_backup(coll, elog='_elog.pkl', mapext='.map.txt'):
 
 
 # -- Helper functions
+def pp_progress(s, l=40):
+    if s > l:
+        c = l / 2
+        s = s[:c] + ' ... ' + s[-c:]
+    print '\r' + s + ' ' * 34,
+    sys.stdout.flush()
+
+
 def get_records(fn_lsR):
     L = open(fn_lsR).readlines()
     L = [e.strip() for e in L if is_regularfile(e)]

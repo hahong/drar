@@ -100,12 +100,13 @@ def do_incremental_backup(coll, elog='_elog.pkl', mapext='.map.txt'):
     # estimated number of depth required to hold all splits
     nfe = get_estimated_filenum(recs)
     nd = get_required_depth(nfe)
+    nr = len(recs)
 
     print '* Starting archiving:', coll
     print '  - fn_map:  ', fn_map
     print '  - fn_elog: ', fn_elog
     print '  - dstbase: ', dstbase
-    print '  - # files: ', len(recs)
+    print '  - # files: ', nr
     print '  - # sp est:', nfe
     print '  - # dir d: ', nd
     print
@@ -129,6 +130,8 @@ def do_incremental_backup(coll, elog='_elog.pkl', mapext='.map.txt'):
             errors.append(('compress_one_rec', rec, inf))
             continue
         spb, fn_src = inf
+        if irec % (nr / 10 + 1) == 1:
+            print 'At: %s (%d%%)' % (fn_src, 100 * irec / nr)
 
         splits = sorted(glob.glob(spb + '*'))
         for isp, sp in enumerate(splits):
@@ -145,6 +148,7 @@ def do_incremental_backup(coll, elog='_elog.pkl', mapext='.map.txt'):
                 continue
             print >>mf, '%8d || %120s || %45s || %s' % \
                     (irec, fn_src, sp, dst)
+            mf.flush()
 
     # -- cleanup
     mf.close()

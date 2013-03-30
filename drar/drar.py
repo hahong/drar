@@ -131,11 +131,9 @@ def do_incremental_backup(coll, elogext=ELOG_EXT, mapext=MAP_EXT,
     ne = 0
     nf = -1
     for irec, rec in enumerate(recs):
-        inf = None
         # compress the rec and split into small pieces
         pp_progress('At (%d%%): %s' % (100 * irec / nr, 'splitting...'))
-        if inf is None:
-            succ, inf = prepare_one_rec(coll, rec)
+        succ, inf = prepare_one_rec(coll, rec)
         if not succ:
             print '\n*** Error: prepare_one_rec():', inf
             my_dump({'func': 'prepare_one_rec', 'rec': rec,
@@ -184,8 +182,7 @@ def do_incremental_backup(coll, elogext=ELOG_EXT, mapext=MAP_EXT,
 
     print '\r' + ' ' * 90
     if ne > 0:
-        print '*** There were %d errors.' % ne
-        print '    Saved error logs: %s' % fn_elog
+        print '*** There were %d errors logged as: %s' % (ne, fn_elog)
     else:
         dbox_upload(apicli, fn_map, dstbase + '/' + fn_map)
         if rm_elog_on_succ:
@@ -303,12 +300,12 @@ def dbox_upload_once(apicli, src, dst, halg=hashlib.sha224,
         tfp.close()
         f.close()
 
+        # test downloaded one
         h1 = halg(open(tmpfn, 'rb').read()).hexdigest()
         my_unlink(tmpfn)
         if h0 != h1:
             apicli.file_delete(dst)
             raise ValueError('Not matching hashes: %s != %s' % (h0, h1))
-
         if move:
             my_unlink(src)
 

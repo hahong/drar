@@ -15,6 +15,8 @@ REMOTE_PATH = '/AR'
 APP_IDENT_FILE = 'AR_app_ident.txt'
 LARGE_TMP = '/home/hahong/teleport/space/tmp'
 MAX_N_PER_DIR = 2000   # maximum number of files per folder in Dropbox
+ELOG_EXT = '.elog.pkl'
+MAP_EXT = '.map.txt'
 
 
 # -- Main worker functions
@@ -51,7 +53,7 @@ def make_lsR(coll, newer=None, find_newer=True, t_slack=100):
     return coll + os.sep + fn_lsR, fn_lsR_base
 
 
-def compress_one_rec(coll, rec, arname=None, wd='tmp',
+def prepare_one_rec(coll, rec, arname=None, wd='tmp',
         i_inode=0, normalexit=0, large_tmp=LARGE_TMP):
     if not is_regularfile(rec):
         return False, '*** Not not regular file: ' + rec
@@ -89,12 +91,19 @@ def compress_one_rec(coll, rec, arname=None, wd='tmp',
     return r == normalexit, (cspbase, fn)
 
 
-def do_incremental_backup(coll, elog='_elog.pkl', mapext='.map.txt'):
+def do_incremental_backup(coll, elogext=ELOG_EXT, mapext=MAP_EXT,
+        err_recover=None, remote_path=REMOTE_PATH):
     # -- collect lsR data and init dropbox space
-    fn_lsR, bname = make_lsR(coll)
+    if err_recover is None:
+        fn_lsR, bname = make_lsR(coll)
+    else:
+        fn_lsR = err_recover['fn_lsR']
+        bname = err_recover['bname']
+        err_recover['corrected'] = []
+
     fn_map = bname + mapext
-    fn_elog = bname + elog
-    dstbase = REMOTE_PATH + '/' + coll + '/' + bname
+    fn_elog = bname + elogext
+    dstbase = remote_path + '/' + coll + '/' + bname
 
     recs = get_records(fn_lsR)
     if len(recs) == 0:
@@ -124,52 +133,113 @@ def do_incremental_backup(coll, elog='_elog.pkl', mapext='.map.txt'):
 
     # -- pack one-by-one and upload files
     mf = open(fn_map, 'wt')
-    errors = []
-    nf = 0
+    ef = open(fn_elog, 'wb')
+    ne = 0
+    nf = -1
     for irec, rec in enumerate(recs):
+        inf = None
+        # error recovery stuffs
+        if err_recover is not None:
+            if irec not in err_recover['err']:
+                continue
+            assert rec == err_recover['err'][irec]['rec']
+            succ = err_recover['err'][irec]['succ']
+            inf = err_recover['err'][irec]['inf']
+            nf = err_recover['err'][irec]['nf']
+
         # compress the rec and split into small pieces
-        succ, inf = compress_one_rec(coll, rec)
+        pp_progress('At (%d%%): %s' % (100 * irec / nr, 'splitting...'))
+        if inf is None:
+            succ, inf = prepare_one_rec(coll, rec)
         if not succ:
-            print '!!! compress_one_rec:', inf
-            errors.append(('compress_one_rec', rec, inf))
+            print '\n*** Error: prepare_one_rec():', inf
+            my_dump({'func': 'prepare_one_rec', 'rec': rec,
+                'irec': irec, 'inf': inf,
+                'nf': nf, 'status': 'failed'}, ef)
+            ne += 1
             continue
+
         spb, fn_src = inf
+        my_dump({'func': 'prepare_one_rec', 'rec': rec,
+            'irec': irec, 'nf': nf, 'status': 'ok'}, ef)
         pp_progress('At (%d%%): %s' % (100 * irec / nr, fn_src))
+
+        if err_recover is not None:
+            err_recover['corrected'].append(irec)
 
         splits = sorted(glob.glob(spb + '*'))
         for isp, sp in enumerate(splits):
+            nf += 1   # increase regardless of success for safety
             coord = get_coord(nd, nf)[:nd]
             dst = (dstbase + '/' + 'd%04d/' * nd) % coord
             dbox_makedirs(apicli, dst)   # make sure there's holding dir
             dst += 'r%08d.tar.s%04d' % (irec, isp)
 
+            # error recovery stuffs
+            if err_recover is not None:
+                if (irec, sp, 'skip') in err_recover['err']:
+                    err_recover['corrected'].append((irec, sp, 'skip'))
+                    continue
+                elif (irec, '*') in err_recover['err']:
+                    pass
+                elif (irec, sp) in err_recover['err']:
+                    dst = err_recover['err'][irec, sp]['dst']
+                    nf = err_recover['err'][irec, sp]['nf']
+                else:
+                    continue
+
+            pp_progress('At (%d%%): %s' % (100 * irec / nr,
+                fn_src + ' -> ' + dst))
             succ, inf = dbox_upload(apicli, sp, dst)
-            nf += 1   # increase regardless of success for safety
             if not succ:
-                print '!!! dbox_upload:', inf
-                errors.append(('dbox_upload', rec, spb, sp, inf))
+                print '\n*** Error: dbox_upload():', inf
+                my_dump({'func': 'dbox_upload', 'rec': rec, 'spb': spb,
+                    'sp': sp, 'dst': dst, 'fn_src': fn_src,
+                    'inf': inf, 'nf': nf, 'status': 'failed'}, ef)
+                ne += 1
                 continue
-            print >>mf, '%8d || %120s || %45s || %s' % \
-                    (irec, fn_src, sp, dst)
+
+            my_dump({'func': 'dbox_upload', 'rec': rec,
+                'irec': irec, 'sp': sp, 'nf': nf, 'status': 'ok'}, ef)
+            if err_recover is not None:
+                err_recover['corrected'].append((irec, sp))
+
+            print >>mf, '%d\t%d\t%s\t%s\t%s\t%s' % \
+                    (irec, nf, fn_src, sp, dst, inf)   # last one is hash
             mf.flush()
 
+        if err_recover is not None and (irec, '*') in err_recover['err']:
+            err_recover['corrected'].append((irec, '*'))
+        my_dump({'func': 'rec_loop', 'rec': rec,
+            'irec': irec, 'nf': nf, 'status': 'ok'}, ef)
+
     # -- cleanup
-    print '\r' + ' ' * 75
     mf.close()
-    dbox_upload(apicli, fn_map, dstbase + '/' + fn_map)
-    if len(errors) > 0:
-        pk.dump(errors, open(fn_elog, 'wb'))
-        print '*** Saved error logs'
+    ef.close()
+
+    print '\r' + ' ' * 80
+    if err_recover is None:
+        if ne > 0:
+            print '*** There were %d errors.' % ne
+            print '    Saved error logs: %s' % fn_elog
+        else:
+            dbox_upload(apicli, fn_map, dstbase + '/' + fn_map)
+            my_unlink(fn_elog)
     print '* Finished:', coll
 
 
 # -- Helper functions
-def pp_progress(s, l=40):
-    if s > l:
-        c = l / 2
-        s = s[:c] + ' ... ' + s[-c:]
-    print '\r' + s + ' ' * 34,
+def pp_progress(s, l=70, c=20, el=' ... '):
+    n = len(s)
+    if n > l:
+        b = l - c + len(el)
+        s = s[:c] + el + s[-b:]
+    n = len(s)
+    ne = pp_progress.nprev - n   # not need to worry about negative
+    print '\r' + s + ' ' * ne + '\r',
     sys.stdout.flush()
+    pp_progress.nprev = n
+pp_progress.nprev = 0
 
 
 def get_records(fn_lsR):
@@ -213,24 +283,41 @@ def my_freespace(path):
     return s.f_bavail * s.f_frsize
 
 
+def my_unlink(fn):
+    if not os.path.exists(fn):
+        return
+    os.unlink(fn)
+
+
 def my_filesize(fn):
     if not os.path.exists(fn):
         return -1
     return os.stat(fn).st_size
 
 
-def dbox_upload(apicli, src, dst, retry=3, **kwargs):
+def my_dump(obj, fp):
+    pk.dump(obj, fp)
+    fp.flush()
+
+
+def dbox_upload(apicli, src, dst, retry=5, delay503=60, delay=5, **kwargs):
     res = []
     for _ in xrange(retry):
         r = dbox_upload_once(apicli, src, dst, **kwargs)
         if r[0]:
             return r
         res.append(r[1])
+
+        if '503' in r[1]:   # 503 Service Unavailable
+            time.sleep(delay503)
+        else:
+            time.sleep(delay)
     return False, res
 
 
 def dbox_upload_once(apicli, src, dst, halg=hashlib.sha224,
         tmpfnbase='tmp_', move=True, overwrite=True):
+    tmpfn = None
     try:
         fsz = my_filesize(src)
         if dbox_df(apicli) <= fsz:
@@ -252,15 +339,17 @@ def dbox_upload_once(apicli, src, dst, halg=hashlib.sha224,
         f.close()
 
         h1 = halg(open(tmpfn, 'rb').read()).hexdigest()
-        os.unlink(tmpfn)
+        my_unlink(tmpfn)
         if h0 != h1:
             apicli.file_delete(dst)
             raise ValueError('Not matching hashes: %s != %s' % (h0, h1))
 
         if move:
-            os.unlink(src)
+            my_unlink(src)
 
     except Exception, e:
+        if type(tmpfn) is str:
+            my_unlink(tmpfn)
         return False, 'Failed: ' + str(e)
 
     return True, h0
@@ -326,7 +415,7 @@ class StoredSession(session.DropboxSession):
         f.close()
 
     def delete_creds(self):
-        os.unlink(self.TOKEN_FILE)
+        my_unlink(self.TOKEN_FILE)
 
     def link(self):
         request_token = self.obtain_request_token()

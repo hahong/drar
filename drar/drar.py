@@ -94,7 +94,7 @@ def prepare_one_rec(coll, rec, arname=None, wd='tmp',
     # NOT USING gzip COMPRESSION - too slow..
     # r = os.system('cd %s; tar czpf - "%s" | split -a 3 -d -b 200M'
     #         ' - "%s"' % (coll, fn, spbase))
-    r = os.system('cd %s; tar --lzop -cpf - "%s" | split -d -b 200M'
+    r = os.system('cd %s; tar --lzop -cpf - "%s" | split -a 8 -d -b 200M'
             ' - "%s"' % (coll, fn, spbase))
     if nicer_fn:
         splits = sorted(glob.glob(cspbase + '*'))

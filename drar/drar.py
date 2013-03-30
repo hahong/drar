@@ -8,9 +8,9 @@ import hashlib
 import cPickle as pk
 import sys
 from dropbox import client, session, rest
-from math import log
+from math import log, log10
 
-LSR_EXT = '.lst'
+LSR_EXT = '.lsR.lst'
 REMOTE_PATH = '/AR'
 APP_IDENT_FILE = 'AR_app_ident.txt'
 LARGE_TMP = '/home/hahong/teleport/space/tmp'
@@ -23,7 +23,7 @@ MAP_EXT = '.map.txt'
 def make_lsR(coll, newer=None, find_newer=True, t_slack=100):
     t0 = time.time()
     coll = coll.replace(os.sep, '')
-    bn_lsR = '%s_lsR_' % coll
+    bn_lsR = '%s_' % coll
     fn_lsR_base = '%s%f' % (bn_lsR, t0)
     fn_lsR = fn_lsR_base + LSR_EXT
     ext = ''
@@ -54,21 +54,28 @@ def make_lsR(coll, newer=None, find_newer=True, t_slack=100):
 
 
 def prepare_one_rec(coll, rec, arname=None, wd='tmp',
-        i_inode=0, normalexit=0, large_tmp=LARGE_TMP):
-    if not is_regularfile(rec):
+        i_inode=0, normalexit=0, large_tmp=LARGE_TMP,
+        skip_hard_work=False, nicer_fn=True):
+    is_regf, ftype = is_regularfile(rec, full=True)
+    if not is_regf:
         return False, '*** Not not regular file: ' + rec
 
     fn = rec[rec.index(coll + os.sep):]
+    fn = get_regular_filename(fn, ftype)
     if not os.path.exists(coll + os.sep + fn):
         return False, '*** File not exists: ' + coll + os.sep + fn
     fsz = my_filesize(coll + os.sep + fn)
 
     if arname is None:
-        arname = rec.split()[i_inode]
+        arname = rec.split()[i_inode] + '_' + \
+                get_dboxsafe_filename(os.path.basename(fn))
     elif arname == 'original':
         arname = os.path.basename(fn)
-    spbase = wd + os.sep + arname + '.tar.'
+    spbase = wd + os.sep + arname + '.tar.lzo.sp'
     cspbase = coll + os.sep + spbase
+    if skip_hard_work:
+        print '* Skip actual file splitting:', cspbase
+        return True, (cspbase, fn)
 
     fullwd = coll + os.sep + wd
     my_makedirs(fullwd)
@@ -76,25 +83,51 @@ def prepare_one_rec(coll, rec, arname=None, wd='tmp',
         if my_freespace(large_tmp) < fsz:
             # return False, '*** Not enough space: ' + fn
             print '*** Not enough space.  Need free space on:', large_tmp
+            print '*** User action required.  Press enter after done.'
             raw_input()
             if my_freespace(large_tmp) < fsz:
                 return False, '*** Not enough space: ' + fn
         fullwd = large_tmp
-        spbase = os.path.abspath(large_tmp) + os.sep + arname + '.tar.'
+        spbase = os.path.abspath(large_tmp) + os.sep + arname + '.tar.lzo.'
         cspbase = spbase
 
-    # NOT USING COMPRESSION - too slow..
+    # NOT USING gzip COMPRESSION - too slow..
     # r = os.system('cd %s; tar czpf - "%s" | split -a 3 -d -b 200M'
     #         ' - "%s"' % (coll, fn, spbase))
-    r = os.system('cd %s; tar cpf - "%s" | split -a 3 -d -b 200M'
+    r = os.system('cd %s; tar --lzop -cpf - "%s" | split -d -b 200M'
             ' - "%s"' % (coll, fn, spbase))
+    if nicer_fn:
+        splits = sorted(glob.glob(cspbase + '*'))
+        ns = len(splits)
+        if ns > 1:
+            sptot = '.tot%d' % ns
+            npad = int(log10(ns) + 1)
+            for sp in splits:
+                spi = int(sp.split(cspbase)[-1])
+                spi_nicer = '%%0%dd' % npad
+                # make it 1-based for human readability
+                spi_nicer = spi_nicer % (spi + 1)
+                spnew = cspbase + spi_nicer
+                os.rename(sp, spnew + sptot)
+        elif ns == 1:
+            fnnew = '.'.join(splits[0].split('.')[:-1])
+            os.rename(splits[0], fnnew)
+            cspbase = fnnew
+        else:
+            return False, '*** Cannot find files: ' + cspbase
+
     return r == normalexit, (cspbase, fn)
 
 
 def do_incremental_backup(coll, elogext=ELOG_EXT, mapext=MAP_EXT,
-        remote_path=REMOTE_PATH, rm_elog_on_succ=True):
+        remote_path=REMOTE_PATH, rm_elog_on_succ=True, recover=None,
+        force_continue=False):
     # -- collect lsR data and init dropbox space
-    fn_lsR, bname = make_lsR(coll)
+    if recover is None:
+        fn_lsR, bname = make_lsR(coll)
+    else:
+        fn_lsR = recover['fn_lsR']
+        bname = recover['bname']
     fn_map = bname + mapext
     fn_elog = bname + elogext
     dstbase = remote_path + '/' + coll + '/' + bname
@@ -119,59 +152,92 @@ def do_incremental_backup(coll, elogext=ELOG_EXT, mapext=MAP_EXT,
     print
 
     # setup dropbox connection
-    app_key, app_secret = open(APP_IDENT_FILE).read().strip().split('|')
-    sess = StoredSession(app_key, app_secret, 'dropbox')
-    sess.load_creds()
-    apicli = client.DropboxClient(sess)
+    apicli, _ = make_conn()
     dbox_makedirs(apicli, dstbase)
 
     # -- pack one-by-one and upload files
-    mf = open(fn_map, 'wt')
-    ef = open(fn_elog, 'wb')
+    mf = open(fn_map, 'at')
+    ef = open(fn_elog, 'ab')
     ne = 0
-    nf = -1
-    for irec, rec in enumerate(recs):
+    nf = 0 if recover is None else recover['nf_base']
+    ib = 0 if recover is None else recover['ib']
+    recinf_recover = None if recover is None else recover['recinf']
+    spinf_recover = None if recover is None else recover['spinf']
+    confirm_once = False
+    skip_hard_work_once = False
+
+    if recinf_recover is not None:
+        skip_hard_work_once = recinf_recover.get('skip_hard_work_once', False)
+        recinf_recover = None
+        confirm_once = True
+
+    for irec, rec in recs[ib:]:
         # compress the rec and split into small pieces
         pp_progress('At (%d%%): %s' % (100 * irec / nr, 'splitting...'))
-        succ, inf = prepare_one_rec(coll, rec)
+        succ, inf = prepare_one_rec(coll, rec,
+                skip_hard_work=skip_hard_work_once)
+        skip_hard_work_once = False
+
         if not succ:
             print '\n*** Error: prepare_one_rec():', inf
             my_dump({'func': 'prepare_one_rec', 'rec': rec,
                 'irec': irec, 'inf': inf,
                 'nf': nf, 'status': 'failed'}, ef)
             ne += 1
-            continue
+            if force_continue:
+                continue
+            print '*** Aborting.'
+            break
 
+        # get info and journal stuffs
         spb, fn_src = inf
         my_dump({'func': 'prepare_one_rec', 'rec': rec,
             'irec': irec, 'nf': nf, 'status': 'ok'}, ef)
         pp_progress('At (%d%%): %s' % (100 * irec / nr, fn_src))
 
+        # get splits and handle recovery info if needed
         splits = sorted(glob.glob(spb + '*'))
-        for isp, sp in enumerate(splits):
-            nf += 1   # increase regardless of success for safety
+        if spinf_recover is not None:
+            n_sp_done = spinf_recover['n_sp_done']
+            nf += n_sp_done
+            spinf_recover = None
+            confirm_once = True
+
+        for sp in splits:
             coord = get_coord(nd, nf)[:nd]
             dst = (dstbase + '/' + 'd%04d/' * nd) % coord
             dbox_makedirs(apicli, dst)   # make sure there's holding dir
-            dst += 'r%08d.tar.s%04d' % (irec, isp)
+            dst += os.path.basename(sp)
+            dbox_overwrite_check(apicli, dst)
+            if confirm_once:
+                print '\n* Confirmation required:'
+                print '   - nf: ', nf
+                print '   - sp: ', sp
+                print '   - dst:', dst
+                print '*** Press ^C to halt.  Otherwise, press enter.'
+                raw_input()
+                confirm_once = False
 
             pp_progress('At (%d%%): %s' % (100 * irec / nr,
                 fn_src + ' -> ' + dst))
             succ, inf = dbox_upload(apicli, sp, dst)
-            if not succ:
+
+            if succ:
+                my_dump({'func': 'dbox_upload', 'rec': rec,
+                    'irec': irec, 'sp': sp, 'nf': nf, 'status': 'ok'}, ef)
+
+                print >>mf, '%d\t%d\t%s\t%s\t%s\t%s' % \
+                        (irec, nf, fn_src, sp, dst, inf)   # last one is hash
+                mf.flush()
+            else:
                 print '\n*** Error: dbox_upload():', inf
                 my_dump({'func': 'dbox_upload', 'rec': rec, 'spb': spb,
                     'sp': sp, 'dst': dst, 'fn_src': fn_src,
                     'inf': inf, 'nf': nf, 'status': 'failed'}, ef)
                 ne += 1
-                continue
 
-            my_dump({'func': 'dbox_upload', 'rec': rec,
-                'irec': irec, 'sp': sp, 'nf': nf, 'status': 'ok'}, ef)
-
-            print >>mf, '%d\t%d\t%s\t%s\t%s\t%s' % \
-                    (irec, nf, fn_src, sp, dst, inf)   # last one is hash
-            mf.flush()
+            # increase regardless of success
+            nf += 1
 
         my_dump({'func': 'rec_loop', 'rec': rec,
             'irec': irec, 'nf': nf, 'status': 'ok'}, ef)
@@ -185,6 +251,8 @@ def do_incremental_backup(coll, elogext=ELOG_EXT, mapext=MAP_EXT,
         print '*** There were %d errors logged as: %s' % (ne, fn_elog)
     else:
         dbox_upload(apicli, fn_map, dstbase + '/' + fn_map)
+        dbox_upload(apicli, fn_lsR, dstbase + '/' + os.path.basename(fn_lsR),
+                move=False)
         if rm_elog_on_succ:
             my_unlink(fn_elog)
     print '* Finished:', coll
@@ -204,15 +272,24 @@ def pp_progress(s, l=90, c=20, el=' ... '):
 pp_progress.nprev = 0
 
 
+def make_conn(app_ident_file=APP_IDENT_FILE, ):
+    app_key, app_secret = open(app_ident_file).read().strip().split('|')
+    sess = StoredSession(app_key, app_secret, 'dropbox')
+    sess.load_creds()
+    apicli = client.DropboxClient(sess)
+    return apicli, sess
+
+
 def get_records(fn_lsR):
     L = open(fn_lsR).readlines()
     L = [e.strip() for e in L if is_regularfile(e)]
+    L = [(i, e) for i, e in enumerate(L)]
     return L
 
 
 def get_estimated_filenum(recs, div=200 * 1024 * 1024, i_blks=5):
     n = 0
-    for rec in recs:
+    for irec, rec in recs:
         fs = float(rec.split()[i_blks])
         n0 = int(fs / div) + 1   # esimated splits for this rec
         n += n0
@@ -231,8 +308,22 @@ def get_coord(nd, n, nmax=MAX_N_PER_DIR):
     return (n,)
 
 
-def is_regularfile(rec, i_perm=1):
-    return rec.split()[i_perm].startswith('-')
+def is_regularfile(rec, i_perm=1, permit_symlinks=True, full=False):
+    permits = ('-',)
+    if permit_symlinks:
+        permits += ('l',)
+
+    stperm = rec.split()[i_perm]
+    if full:
+        return stperm.startswith(permits), stperm[0]
+    return stperm.startswith(permits)
+
+
+def get_regular_filename(fn, ftype):
+    if ftype == '-':
+        return fn
+    if ftype == 'l':  # symlinks
+        return fn.split(' -> ')[0]
 
 
 def my_makedirs(path):
@@ -262,7 +353,21 @@ def my_dump(obj, fp):
     fp.flush()
 
 
-def dbox_upload(apicli, src, dst, retry=5, delay503=60, delay=5, **kwargs):
+def get_dboxsafe_filename(fn, allowed=['_', '-', '.']):
+    return ''.join(e if e.isalnum() or e in allowed else '_' for e in str(fn))
+
+
+def dbox_overwrite_check(apicli, dst, retry=3):
+    if not dbox_exists(apicli, dst):
+        return
+    print '\n*** File exists:', dst
+    print '*** User action required.  Press enter after done.'
+    raw_input()
+    if retry > 0:
+        dbox_overwrite_check(apicli, dst, retry=retry - 1)
+
+
+def dbox_upload(apicli, src, dst, retry=5, delay_long=60, delay=5, **kwargs):
     res = []
     for _ in xrange(retry):
         r = dbox_upload_once(apicli, src, dst, **kwargs)
@@ -271,7 +376,7 @@ def dbox_upload(apicli, src, dst, retry=5, delay503=60, delay=5, **kwargs):
         res.append(r[1])
 
         if '503' in r[1]:   # 503 Service Unavailable
-            time.sleep(delay503)
+            time.sleep(delay_long)
         else:
             time.sleep(delay)
     return False, res
@@ -283,7 +388,9 @@ def dbox_upload_once(apicli, src, dst, halg=hashlib.sha224,
     try:
         fsz = my_filesize(src)
         if dbox_df(apicli) <= fsz:
-            print '*** Not enough dropbox space.  Need free space for:', src
+            print '\n*** Not enough dropbox space.  Need %db for: %s' % \
+                    (fsz, src)
+            print '*** User action required.  Press enter after done.'
             raw_input()
             if dbox_df(apicli) <= fsz:
                 return False, '*** Not enough dropbox space: ' + src
@@ -330,7 +437,7 @@ def dbox_makedirs(apicli, path):
     assert dbox_exists(apicli, path)   # assure the path is made
 
 
-def dbox_exists(apicli, path, info=False):
+def dbox_exists(apicli, path, info=False, retry=3, delay=5):
     try:
         res = apicli.metadata(path)
         if res.get('is_deleted'):
@@ -339,8 +446,15 @@ def dbox_exists(apicli, path, info=False):
         if info:
             return res
         return True
-    except rest.ErrorResponse:
-        pass
+    except Exception, e:
+        # 404: not exists
+        if type(e) is rest.ErrorResponse and e.status == 404:
+            return False
+        print '\n*** Error: dbox_exists():', e
+        if retry > 0:
+            time.sleep(delay)
+            return dbox_exists(apicli, path, info=info,
+                    retry=retry - 1, delay=delay)
     return False
 
 
@@ -355,7 +469,21 @@ def dbox_df(apicli):
 
 
 def main_cli(args):
-    do_incremental_backup(args[0])
+    if len(args) == 1:
+        do_incremental_backup(args[0])
+    elif len(args) == 2:
+        coll, recfn = args
+        recover = pk.load(open(recfn))
+        assert 'fn_lsR' in recover
+        if 'bname' not in recover:
+            recover['bname'] = \
+                    os.path.basename(recover['fn_lsR']).replace(LSR_EXT, '')
+        assert 'nf_base' in recover
+        assert 'ib' in recover
+        assert 'recinf' in recover
+        assert 'spinf' in recover
+        assert 'n_sp_done' in recover['spinf']
+        do_incremental_backup(coll, recover=recover)
 
 
 # -- Copied from dropbox example's cli_client.py

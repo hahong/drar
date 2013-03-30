@@ -55,7 +55,7 @@ def make_lsR(coll, newer=None, find_newer=True, t_slack=100):
 
 def prepare_one_rec(coll, rec, arname=None, wd='tmp',
         i_inode=0, normalexit=0, large_tmp=LARGE_TMP,
-        skip_hard_work=False, nicer_fn=True):
+        skip_hard_work=False, nicer_fn=True, sp_patt='.tar.lzo.sp'):
     is_regf, ftype = is_regularfile(rec, full=True)
     if not is_regf:
         return False, '*** Not not regular file: ' + rec
@@ -71,7 +71,7 @@ def prepare_one_rec(coll, rec, arname=None, wd='tmp',
                 get_dboxsafe_filename(os.path.basename(fn))
     elif arname == 'original':
         arname = os.path.basename(fn)
-    spbase = wd + os.sep + arname + '.tar.lzo.sp'
+    spbase = wd + os.sep + arname + sp_patt
     cspbase = coll + os.sep + spbase
     if skip_hard_work:
         print '* Skip actual file splitting:', cspbase
@@ -88,13 +88,13 @@ def prepare_one_rec(coll, rec, arname=None, wd='tmp',
             if my_freespace(large_tmp) < fsz:
                 return False, '*** Not enough space: ' + fn
         fullwd = large_tmp
-        spbase = os.path.abspath(large_tmp) + os.sep + arname + '.tar.lzo.'
+        spbase = os.path.abspath(large_tmp) + os.sep + arname + sp_patt
         cspbase = spbase
 
     # NOT USING gzip COMPRESSION - too slow..
     # r = os.system('cd %s; tar czpf - "%s" | split -a 3 -d -b 200M'
     #         ' - "%s"' % (coll, fn, spbase))
-    r = os.system('cd %s; tar --lzop -cpf - "%s" | split -a 8 -d -b 200M'
+    r = os.system('cd %s; tar --lzop -cpf - "%s" | split -a 9 -d -b 200M'
             ' - "%s"' % (coll, fn, spbase))
     if nicer_fn:
         splits = sorted(glob.glob(cspbase + '*'))

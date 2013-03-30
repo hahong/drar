@@ -92,15 +92,9 @@ def prepare_one_rec(coll, rec, arname=None, wd='tmp',
 
 
 def do_incremental_backup(coll, elogext=ELOG_EXT, mapext=MAP_EXT,
-        err_recover=None, remote_path=REMOTE_PATH):
+        remote_path=REMOTE_PATH, rm_elog_on_succ=True):
     # -- collect lsR data and init dropbox space
-    if err_recover is None:
-        fn_lsR, bname = make_lsR(coll)
-    else:
-        fn_lsR = err_recover['fn_lsR']
-        bname = err_recover['bname']
-        err_recover['corrected'] = []
-
+    fn_lsR, bname = make_lsR(coll)
     fn_map = bname + mapext
     fn_elog = bname + elogext
     dstbase = remote_path + '/' + coll + '/' + bname
@@ -138,15 +132,6 @@ def do_incremental_backup(coll, elogext=ELOG_EXT, mapext=MAP_EXT,
     nf = -1
     for irec, rec in enumerate(recs):
         inf = None
-        # error recovery stuffs
-        if err_recover is not None:
-            if irec not in err_recover['err']:
-                continue
-            assert rec == err_recover['err'][irec]['rec']
-            succ = err_recover['err'][irec]['succ']
-            inf = err_recover['err'][irec]['inf']
-            nf = err_recover['err'][irec]['nf']
-
         # compress the rec and split into small pieces
         pp_progress('At (%d%%): %s' % (100 * irec / nr, 'splitting...'))
         if inf is None:
@@ -164,9 +149,6 @@ def do_incremental_backup(coll, elogext=ELOG_EXT, mapext=MAP_EXT,
             'irec': irec, 'nf': nf, 'status': 'ok'}, ef)
         pp_progress('At (%d%%): %s' % (100 * irec / nr, fn_src))
 
-        if err_recover is not None:
-            err_recover['corrected'].append(irec)
-
         splits = sorted(glob.glob(spb + '*'))
         for isp, sp in enumerate(splits):
             nf += 1   # increase regardless of success for safety
@@ -174,19 +156,6 @@ def do_incremental_backup(coll, elogext=ELOG_EXT, mapext=MAP_EXT,
             dst = (dstbase + '/' + 'd%04d/' * nd) % coord
             dbox_makedirs(apicli, dst)   # make sure there's holding dir
             dst += 'r%08d.tar.s%04d' % (irec, isp)
-
-            # error recovery stuffs
-            if err_recover is not None:
-                if (irec, sp, 'skip') in err_recover['err']:
-                    err_recover['corrected'].append((irec, sp, 'skip'))
-                    continue
-                elif (irec, '*') in err_recover['err']:
-                    pass
-                elif (irec, sp) in err_recover['err']:
-                    dst = err_recover['err'][irec, sp]['dst']
-                    nf = err_recover['err'][irec, sp]['nf']
-                else:
-                    continue
 
             pp_progress('At (%d%%): %s' % (100 * irec / nr,
                 fn_src + ' -> ' + dst))
@@ -201,15 +170,11 @@ def do_incremental_backup(coll, elogext=ELOG_EXT, mapext=MAP_EXT,
 
             my_dump({'func': 'dbox_upload', 'rec': rec,
                 'irec': irec, 'sp': sp, 'nf': nf, 'status': 'ok'}, ef)
-            if err_recover is not None:
-                err_recover['corrected'].append((irec, sp))
 
             print >>mf, '%d\t%d\t%s\t%s\t%s\t%s' % \
                     (irec, nf, fn_src, sp, dst, inf)   # last one is hash
             mf.flush()
 
-        if err_recover is not None and (irec, '*') in err_recover['err']:
-            err_recover['corrected'].append((irec, '*'))
         my_dump({'func': 'rec_loop', 'rec': rec,
             'irec': irec, 'nf': nf, 'status': 'ok'}, ef)
 
@@ -217,19 +182,19 @@ def do_incremental_backup(coll, elogext=ELOG_EXT, mapext=MAP_EXT,
     mf.close()
     ef.close()
 
-    print '\r' + ' ' * 80
-    if err_recover is None:
-        if ne > 0:
-            print '*** There were %d errors.' % ne
-            print '    Saved error logs: %s' % fn_elog
-        else:
-            dbox_upload(apicli, fn_map, dstbase + '/' + fn_map)
+    print '\r' + ' ' * 90
+    if ne > 0:
+        print '*** There were %d errors.' % ne
+        print '    Saved error logs: %s' % fn_elog
+    else:
+        dbox_upload(apicli, fn_map, dstbase + '/' + fn_map)
+        if rm_elog_on_succ:
             my_unlink(fn_elog)
     print '* Finished:', coll
 
 
 # -- Helper functions
-def pp_progress(s, l=70, c=20, el=' ... '):
+def pp_progress(s, l=90, c=20, el=' ... '):
     n = len(s)
     if n > l:
         b = l - c + len(el)

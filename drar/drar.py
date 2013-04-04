@@ -99,7 +99,7 @@ def prepare_one_rec(coll, recdesc, arname=None, wd='tmp', recs=None,
 
     # -- if hardlink, then just write the path to already transferred data.
     if hardlink:
-        open(cspbase, 'wt').write(fn1)
+        open(cspbase, 'wt').write(fn1 + '\n->\n' + fn)
         return True, (cspbase, fn)
 
     # -- split the file if needed

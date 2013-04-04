@@ -15,7 +15,7 @@ REMOTE_PATH = '/AR'
 APP_IDENT_FILE = 'AR_app_ident.txt'
 LARGE_TMP = '/home/hahong/teleport/space/tmp'
 MAX_N_PER_DIR = 2000   # maximum number of files per folder in Dropbox
-ELOG_EXT = '.elog.pkl'
+LOG_EXT = '.log.pkl'
 MAP_EXT = '.map.txt'
 
 
@@ -53,9 +53,10 @@ def make_lsR(coll, newer=None, find_newer=True, t_slack=100):
     return coll + os.sep + fn_lsR, fn_lsR_base
 
 
-def prepare_one_rec(coll, rec, arname=None, wd='tmp',
+def prepare_one_rec(coll, recdesc, arname=None, wd='tmp', recs=None,
         i_inode=0, normalexit=0, large_tmp=LARGE_TMP,
         skip_hard_work=False, nicer_fn=True, sp_patt='.tar.lzo.sp'):
+    rec, irec, nrec = recdesc
     is_regf, ftype = is_regularfile(rec, full=True)
     if not is_regf:
         return False, '*** Not not regular file: ' + rec
@@ -66,17 +67,42 @@ def prepare_one_rec(coll, rec, arname=None, wd='tmp',
         return False, '*** File not exists: ' + coll + os.sep + fn
     fsz = my_filesize(coll + os.sep + fn)
 
+    # -- determine file name in the archive "aname"
     if arname is None:
+        # gives filename based on the record number
+        arname = 'f' + get_padded_numstr(irec, nrec) + '_' + \
+                get_dboxsafe_filename(os.path.basename(fn))
+    elif arname == '__inode__':
+        # gives filename based on the inode
         arname = rec.split()[i_inode] + '_' + \
                 get_dboxsafe_filename(os.path.basename(fn))
-    elif arname == 'original':
+    elif arname == '__original__':
         arname = os.path.basename(fn)
-    spbase = wd + os.sep + arname + sp_patt
+
+    # process hardlinks if recs is present
+    hardlink = False
+    if recs is not None:
+        inode0 = int(rec.split()[i_inode])  # this record's inode
+        for irec1, rec1 in recs[:irec]:
+            inode1 = int(rec1.split()[i_inode])
+            if inode1 != inode0:
+                continue
+            hardlink = True
+            fn1 = rec1[rec1.index(coll + os.sep):]
+            arname += '__hardlink_to__f%s.txt' % get_padded_numstr(irec1, nrec)
+
+    spbase = wd + os.sep + arname + (sp_patt if not hardlink else '')
     cspbase = coll + os.sep + spbase
     if skip_hard_work:
         print '* Skip actual file splitting:', cspbase
         return True, (cspbase, fn)
 
+    # -- if hardlink, then just write the path to already transferred data.
+    if hardlink:
+        open(cspbase, 'wt').write(fn1)
+        return True, (cspbase, fn)
+
+    # -- split the file if needed
     fullwd = coll + os.sep + wd
     my_makedirs(fullwd)
     if my_freespace(fullwd) < fsz and os.path.exists(large_tmp):
@@ -100,13 +126,11 @@ def prepare_one_rec(coll, rec, arname=None, wd='tmp',
         ns = len(splits)
         if ns > 1:
             sptot = '.tot%d' % ns
-            npad = int(log10(ns) + 1)
             for sp in splits:
                 spi = int(sp.split(cspbase)[-1])
-                spi_nicer = '%%0%dd' % npad
                 # make it 1-based for human readability
-                spi_nicer = spi_nicer % (spi + 1)
-                spnew = cspbase + spi_nicer
+                spi = get_padded_numstr(spi + 1, ns)
+                spnew = cspbase + spi
                 os.rename(sp, spnew + sptot)
         elif ns == 1:
             fnnew = '.'.join(splits[0].split('.')[:-1])
@@ -118,9 +142,8 @@ def prepare_one_rec(coll, rec, arname=None, wd='tmp',
     return r == normalexit, (cspbase, fn)
 
 
-def do_incremental_backup(coll, elogext=ELOG_EXT, mapext=MAP_EXT,
-        remote_path=REMOTE_PATH, rm_elog_on_succ=True, recover=None,
-        force_continue=False):
+def do_incremental_backup(coll, logext=LOG_EXT, mapext=MAP_EXT,
+        remote_path=REMOTE_PATH, recover=None, force_continue=False):
     # -- collect lsR data and init dropbox space
     if recover is None:
         fn_lsR, bname = make_lsR(coll)
@@ -128,7 +151,7 @@ def do_incremental_backup(coll, elogext=ELOG_EXT, mapext=MAP_EXT,
         fn_lsR = recover['fn_lsR']
         bname = recover['bname']
     fn_map = bname + mapext
-    fn_elog = bname + elogext
+    fn_log = bname + logext
     dstbase = remote_path + '/' + coll + '/' + bname
 
     recs = get_records(fn_lsR)
@@ -143,7 +166,7 @@ def do_incremental_backup(coll, elogext=ELOG_EXT, mapext=MAP_EXT,
 
     print '* Starting archiving:', coll
     print '  - fn_map:  ', fn_map
-    print '  - fn_elog: ', fn_elog
+    print '  - fn_log:  ', fn_log
     print '  - dstbase: ', dstbase
     print '  - # files: ', nr
     print '  - # sp est:', nfe
@@ -156,7 +179,7 @@ def do_incremental_backup(coll, elogext=ELOG_EXT, mapext=MAP_EXT,
 
     # -- pack one-by-one and upload files
     mf = open(fn_map, 'at')
-    ef = open(fn_elog, 'ab')
+    ef = open(fn_log, 'ab')
     ne = 0
     nf = 0 if recover is None else recover['nf_base']
     ib = 0 if recover is None else recover['ib']
@@ -173,8 +196,8 @@ def do_incremental_backup(coll, elogext=ELOG_EXT, mapext=MAP_EXT,
     for irec, rec in recs[ib:]:
         # compress the rec and split into small pieces
         pp_progress('At (%d%%): %s' % (100 * irec / nr, 'splitting...'))
-        succ, inf = prepare_one_rec(coll, rec,
-                skip_hard_work=skip_hard_work_once)
+        succ, inf = prepare_one_rec(coll, (rec, irec, nr),
+                skip_hard_work=skip_hard_work_once, recs=recs)
         skip_hard_work_once = False
 
         if not succ:
@@ -247,13 +270,12 @@ def do_incremental_backup(coll, elogext=ELOG_EXT, mapext=MAP_EXT,
 
     print '\r' + ' ' * 90
     if ne > 0:
-        print '*** There were %d errors logged as: %s' % (ne, fn_elog)
+        print '*** There were %d errors logged as: %s' % (ne, fn_log)
     else:
-        dbox_upload(apicli, fn_map, dstbase + '/' + fn_map)
+        dbox_upload(apicli, fn_map, dstbase + '/' + os.path.basename(fn_map))
+        dbox_upload(apicli, fn_log, dstbase + '/' + os.path.basename(fn_log))
         dbox_upload(apicli, fn_lsR, dstbase + '/' + os.path.basename(fn_lsR),
                 move=False)
-        if rm_elog_on_succ:
-            my_unlink(fn_elog)
     print '* Finished:', coll
 
 
@@ -350,6 +372,12 @@ def my_filesize(fn):
 def my_dump(obj, fp):
     pk.dump(obj, fp)
     fp.flush()
+
+
+def get_padded_numstr(n, ntotal):
+    npad = int(log10(ntotal) + 1)
+    spad = '%%0%dd' % npad
+    return spad % n
 
 
 def get_dboxsafe_filename(fn, allowed=['_', '-', '.']):

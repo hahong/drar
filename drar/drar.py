@@ -63,9 +63,11 @@ def prepare_one_rec(coll, recdesc, arname=None, wd='tmp', recs=None,
 
     fn = rec[rec.index(coll + os.sep):]
     fn = get_regular_filename(fn, ftype)
-    if not os.path.exists(coll + os.sep + fn):
-        return False, '*** File not exists: ' + coll + os.sep + fn
-    fsz = my_filesize(coll + os.sep + fn)
+    pth = coll + os.sep + fn
+    # os.path.islink is needed to allow broken symlinks
+    if not os.path.exists(pth) and not os.path.islink(pth):
+        return False, '*** File not exists: ' + pth
+    fsz = my_filesize(pth)
 
     # -- determine file name in the archive "aname"
     if arname is None:
@@ -185,13 +187,12 @@ def do_incremental_backup(coll, logext=LOG_EXT, mapext=MAP_EXT,
     ib = 0 if recover is None else recover['ib']
     recinf_recover = None if recover is None else recover['recinf']
     spinf_recover = None if recover is None else recover['spinf']
-    confirm_once = False
+    confirm_once = False if recover is None else True
     skip_hard_work_once = False
 
     if recinf_recover is not None:
         skip_hard_work_once = recinf_recover.get('skip_hard_work_once', False)
         recinf_recover = None
-        confirm_once = True
 
     for irec, rec in recs[ib:]:
         # compress the rec and split into small pieces
@@ -223,7 +224,6 @@ def do_incremental_backup(coll, logext=LOG_EXT, mapext=MAP_EXT,
             n_sp_done = spinf_recover['n_sp_done']
             nf += n_sp_done
             spinf_recover = None
-            confirm_once = True
 
         for sp in splits:
             coord = get_coord(nd, nf)[:nd]
@@ -277,6 +277,52 @@ def do_incremental_backup(coll, logext=LOG_EXT, mapext=MAP_EXT,
         dbox_upload(apicli, fn_lsR, dstbase + '/' + os.path.basename(fn_lsR),
                 move=False)
     print '* Finished:', coll
+
+
+def do_recovery(coll, fn_lsR, logfn, lsR_ext=LSR_EXT):
+    nf_base = 0
+    nf_last = 0
+    ib = 0
+    recinf = None
+    spinf = None
+
+    # -- load logs
+    fp = open(logfn)
+    try:
+        while True:
+            l = pk.load(fp)
+            if l['func'] == 'prepare_one_rec':
+                nf_base = l['nf']
+            nf_last = l['nf']
+            ib = l['irec']
+    except EOFError:
+        pass
+
+    n_sp_done = nf_last - nf_base
+    log_last = l   # last entry of logs
+
+    assert log_last['status'] == 'failed'
+    print '* Last record:'
+    print log_last
+    print '*** Press ^C to halt.  Otherwise, press enter.'
+    raw_input()
+
+    # -- make recovery point
+    if log_last['func'] == 'prepare_one_rec':
+        pass
+    elif log_last['func'] == 'dbox_upload':
+        recinf = {'skip_hard_work_once': True}
+        spinf = {'n_sp_done': n_sp_done}
+
+    recover = {}
+    recover['fn_lsR'] = fn_lsR
+    recover['bname'] = os.path.basename(fn_lsR).replace(lsR_ext, '')
+    recover['nf_base'] = nf_base
+    recover['ib'] = ib
+    recover['recinf'] = recinf
+    recover['spinf'] = spinf
+
+    do_incremental_backup(coll, recover=recover)
 
 
 # -- Helper functions
@@ -498,19 +544,11 @@ def dbox_df(apicli):
 def main_cli(args):
     if len(args) == 1:
         do_incremental_backup(args[0])
-    elif len(args) == 2:
-        coll, recfn = args
-        recover = pk.load(open(recfn))
-        assert 'fn_lsR' in recover
-        if 'bname' not in recover:
-            recover['bname'] = \
-                    os.path.basename(recover['fn_lsR']).replace(LSR_EXT, '')
-        assert 'nf_base' in recover
-        assert 'ib' in recover
-        assert 'recinf' in recover
-        assert 'spinf' in recover
-        assert 'n_sp_done' in recover['spinf']
-        do_incremental_backup(coll, recover=recover)
+    elif len(args) == 3:
+        coll, fn_lsR, logfn = args
+        do_recovery(coll, fn_lsR, logfn)
+    else:
+        print 'Arguments not understood.'
 
 
 # -- Copied from dropbox example's cli_client.py

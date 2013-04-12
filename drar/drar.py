@@ -55,7 +55,8 @@ def make_lsR(coll, newer=None, find_newer=True, t_slack=100):
 
 def prepare_one_rec(coll, recdesc, arname=None, wd='tmp', recs=None,
         i_inode=0, normalexit=0, large_tmp=LARGE_TMP,
-        skip_hard_work=False, nicer_fn=True, sp_patt='.tar.lzo.sp'):
+        skip_hard_work=False, nicer_fn=True,
+        sp_patt='.tar.lzo.sp', i_sp_patt_cutoff=-3):
     rec, irec, nrec = recdesc
     is_regf, ftype = is_regularfile(rec, full=True)
     if not is_regf:
@@ -96,6 +97,7 @@ def prepare_one_rec(coll, recdesc, arname=None, wd='tmp', recs=None,
     spbase = wd + os.sep + arname + (sp_patt if not hardlink else '')
     cspbase = coll + os.sep + spbase
     if skip_hard_work:
+        cspbase = cspbase[:i_sp_patt_cutoff]
         print '* Skip actual file splitting:', cspbase
         return True, (cspbase, fn)
 
@@ -301,18 +303,25 @@ def do_recovery(coll, fn_lsR, logfn, lsR_ext=LSR_EXT):
     n_sp_done = nf_last - nf_base
     log_last = l   # last entry of logs
 
-    assert log_last['status'] == 'failed'
+    # assert log_last['status'] == 'failed'   # not needed
     print '* Last record:'
     print log_last
     print '*** Press ^C to halt.  Otherwise, press enter.'
     raw_input()
 
     # -- make recovery point
-    if log_last['func'] == 'prepare_one_rec':
+    if log_last['func'] == 'prepare_one_rec' and \
+            log_last['status'] == 'failed':
         pass
-    elif log_last['func'] == 'dbox_upload':
+    elif log_last['func'] == 'prepare_one_rec' and \
+            log_last['status'] == 'ok':
+        recinf = {'skip_hard_work_once': True}
+    elif log_last['func'] == 'dbox_upload' and \
+            log_last['status'] == 'failed':
         recinf = {'skip_hard_work_once': True}
         spinf = {'n_sp_done': n_sp_done}
+    else:
+        raise ValueError('Cannot understand recovery point.')
 
     recover = {}
     recover['fn_lsR'] = fn_lsR

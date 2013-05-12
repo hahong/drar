@@ -541,10 +541,12 @@ def dbox_upload_once(apicli, src, dst, halg=hashlib.sha224,
             my_unlink(src)
 
     except Exception, e:
+        set_alarm(0)
         if type(tmpfn) is str:
             my_unlink(tmpfn)
         return False, 'Failed: ' + str(e)
 
+    set_alarm(0)
     return True, h0
 
 
@@ -560,6 +562,7 @@ def dbox_makedirs(apicli, path, retry=5, delay=5):
             try:
                 set_alarm()
                 apicli.file_create_folder(path_)
+                set_alarm(0)
                 break
             except TimeoutError:
                 time.sleep(delay)
@@ -571,6 +574,7 @@ def dbox_exists(apicli, path, info=False, retry=5, delay=5):
     try:
         set_alarm()
         res = apicli.metadata(path)
+        set_alarm(0)
         if res.get('is_deleted'):
             return False
 
@@ -578,6 +582,7 @@ def dbox_exists(apicli, path, info=False, retry=5, delay=5):
             return res
         return True
     except Exception, e:
+        set_alarm(0)
         # 404: not exists
         if type(e) is rest.ErrorResponse and e.status == 404:
             return False
@@ -593,9 +598,11 @@ def dbox_df(apicli, retry=5, delay=5):
     try:
         set_alarm()
         inf = apicli.account_info()
+        set_alarm(0)
         return inf['quota_info']['quota'] - inf['quota_info']['normal'] - \
                 inf['quota_info']['shared']
     except Exception, e:
+        set_alarm(0)
         print '\n*** Error: dbox_df():', e
         if retry > 0:
             time.sleep(delay)

@@ -19,8 +19,8 @@ LARGE_TMP = '/home/hahong/teleport/space/tmp'
 MAX_N_PER_DIR = 2000   # maximum number of files per folder in Dropbox
 LOG_EXT = '.log.pkl'
 MAP_EXT = '.map.txt'
-TIMEOUT_SHORT = 60
-TIMEOUT_LONG = 60 * 15
+TIMEOUT_SHORT = 45
+TIMEOUT_LONG = 60 * 10
 
 
 # -- Main worker functions
@@ -203,6 +203,7 @@ def do_incremental_backup(coll, logext=LOG_EXT, mapext=MAP_EXT,
     for irec, rec in recs[ib:]:
         # compress the rec and split into small pieces
         pp_progress('At (%d%%): %s' % (100 * irec / nr, 'splitting...'))
+        set_alarm(0)
         succ, inf = prepare_one_rec(coll, (rec, irec, nr),
                 skip_hard_work=skip_hard_work_once, recs=recs)
         skip_hard_work_once = False
@@ -271,6 +272,7 @@ def do_incremental_backup(coll, logext=LOG_EXT, mapext=MAP_EXT,
             'irec': irec, 'nf': nf, 'status': 'ok'}, ef)
 
     # -- cleanup
+    set_alarm(0)
     mf.close()
     ef.close()
 

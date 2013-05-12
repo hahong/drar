@@ -7,8 +7,10 @@ import glob
 import hashlib
 import cPickle as pk
 import sys
+import signal
 from dropbox import client, session, rest
 from math import log, log10
+# from functools import wraps
 
 LSR_EXT = '.lsR.lst'
 REMOTE_PATH = '/AR'
@@ -17,6 +19,8 @@ LARGE_TMP = '/home/hahong/teleport/space/tmp'
 MAX_N_PER_DIR = 2000   # maximum number of files per folder in Dropbox
 LOG_EXT = '.log.pkl'
 MAP_EXT = '.map.txt'
+TIMEOUT_SHORT = 60
+TIMEOUT_LONG = 60 * 15
 
 
 # -- Main worker functions
@@ -320,6 +324,10 @@ def do_recovery(coll, fn_lsR, logfn, lsR_ext=LSR_EXT):
             log_last['status'] == 'failed':
         recinf = {'skip_hard_work_once': True}
         spinf = {'n_sp_done': n_sp_done}
+    elif log_last['func'] == 'dbox_upload' and \
+            log_last['status'] == 'ok':
+        recinf = {'skip_hard_work_once': True}
+        spinf = {'n_sp_done': n_sp_done + 1}
     else:
         raise ValueError('Cannot understand recovery point.')
 
@@ -335,6 +343,36 @@ def do_recovery(coll, fn_lsR, logfn, lsR_ext=LSR_EXT):
 
 
 # -- Helper functions
+class TimeoutError(Exception):
+    pass
+
+
+def _handle_timeout(signum, frame):
+    # error_message = os.strerror(errno.ETIME)
+    signal.alarm(0)
+    raise TimeoutError('timeout')
+
+
+def set_alarm(t=TIMEOUT_SHORT):
+    signal.signal(signal.SIGALRM, _handle_timeout)
+    signal.alarm(t)
+
+
+# from: http://stackoverflow.com/questions/2281850/ ...
+#       timeout-function-if-it-takes-too-long-to-finish
+# def timeout(seconds=TIMEOUT_SHORT, default=None):
+#     def decorator(func):
+#         def wrapper(*args, **kwargs):
+#             set_alarm(seconds)
+#             try:
+#                 result = func(*args, **kwargs)
+#             except TimeoutError:
+#                 result = default
+#             return result
+#         return wraps(func)(wrapper)
+#     return decorator
+
+
 def pp_progress(s, l=90, c=20, el=' ... '):
     n = len(s)
     if n > l:
@@ -439,7 +477,7 @@ def get_dboxsafe_filename(fn, allowed=['_', '-', '.']):
     return ''.join(e if e.isalnum() or e in allowed else '_' for e in str(fn))
 
 
-def dbox_overwrite_check(apicli, dst, retry=3):
+def dbox_overwrite_check(apicli, dst, retry=5):
     if not dbox_exists(apicli, dst):
         return
     print '\n*** File exists:', dst
@@ -477,11 +515,13 @@ def dbox_upload_once(apicli, src, dst, halg=hashlib.sha224,
             if dbox_df(apicli) <= fsz:
                 return False, '*** Not enough dropbox space: ' + src
 
+        set_alarm(TIMEOUT_LONG)
         h0 = halg(open(src, 'rb').read()).hexdigest()
         # upload...
         apicli.put_file(dst, open(src, 'rb'), overwrite=overwrite)
 
         # ...and download to make sure everything is fine.
+        set_alarm(TIMEOUT_LONG)
         tmpfn = tmpfnbase + str(time.time())
         tfp = open(tmpfn, 'wb')
         f, _ = apicli.get_file_and_metadata(dst)
@@ -506,7 +546,7 @@ def dbox_upload_once(apicli, src, dst, halg=hashlib.sha224,
     return True, h0
 
 
-def dbox_makedirs(apicli, path):
+def dbox_makedirs(apicli, path, retry=5, delay=5):
     px = path.split('/')
     n = len(px)
 
@@ -514,13 +554,20 @@ def dbox_makedirs(apicli, path):
         path_ = '/'.join(px[:i + 1])
         if dbox_exists(apicli, path_):
             continue
-        apicli.file_create_folder(path_)
+        for _ in xrange(retry):
+            try:
+                set_alarm()
+                apicli.file_create_folder(path_)
+                break
+            except TimeoutError:
+                time.sleep(delay)
 
     assert dbox_exists(apicli, path)   # assure the path is made
 
 
-def dbox_exists(apicli, path, info=False, retry=3, delay=5):
+def dbox_exists(apicli, path, info=False, retry=5, delay=5):
     try:
+        set_alarm()
         res = apicli.metadata(path)
         if res.get('is_deleted'):
             return False
@@ -540,13 +587,17 @@ def dbox_exists(apicli, path, info=False, retry=3, delay=5):
     return False
 
 
-def dbox_df(apicli):
+def dbox_df(apicli, retry=5, delay=5):
     try:
+        set_alarm()
         inf = apicli.account_info()
         return inf['quota_info']['quota'] - inf['quota_info']['normal'] - \
                 inf['quota_info']['shared']
-    except rest.ErrorResponse:
-        pass
+    except Exception, e:
+        print '\n*** Error: dbox_df():', e
+        if retry > 0:
+            time.sleep(delay)
+            return dbox_df(apicli, retry=retry - 1, delay=delay)
     return -1
 
 

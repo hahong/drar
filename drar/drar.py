@@ -261,8 +261,8 @@ def do_incremental_backup(coll, logext=LOG_EXT, mapext=MAP_EXT,
                 mf.flush()
             else:
                 print '\n*** Error: dbox_upload():', inf
-                my_dump({'func': 'dbox_upload', 'rec': rec, 'spb': spb,
-                    'sp': sp, 'dst': dst, 'fn_src': fn_src,
+                my_dump({'func': 'dbox_upload', 'irec': irec, 'rec': rec,
+                    'spb': spb, 'sp': sp, 'dst': dst, 'fn_src': fn_src,
                     'inf': inf, 'nf': nf, 'status': 'failed'}, ef)
                 ne += 1
 

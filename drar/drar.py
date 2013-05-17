@@ -116,6 +116,7 @@ def prepare_one_rec(coll, recdesc, arname=None, wd='tmp', recs=None,
     if my_freespace(fullwd) < fsz and os.path.exists(large_tmp):
         if my_freespace(large_tmp) < fsz:
             # return False, '*** Not enough space: ' + fn
+            set_alarm(0)
             print '*** Not enough space.  Need free space on:', large_tmp
             print '*** User action required.  Press enter after done.'
             raw_input()
@@ -482,6 +483,7 @@ def get_dboxsafe_filename(fn, allowed=['_', '-', '.']):
 def dbox_overwrite_check(apicli, dst, retry=5):
     if not dbox_exists(apicli, dst):
         return
+    set_alarm(0)
     print '\n*** File exists:', dst
     print '*** User action required.  Press enter after done.'
     raw_input()
@@ -510,6 +512,7 @@ def dbox_upload_once(apicli, src, dst, halg=hashlib.sha224,
     try:
         fsz = my_filesize(src)
         if dbox_df(apicli) <= fsz:
+            set_alarm(0)
             print '\n*** Not enough dropbox space.  Need %db for: %s' % \
                     (fsz, src)
             print '*** User action required.  Press enter after done.'

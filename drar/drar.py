@@ -303,7 +303,8 @@ def do_recovery(coll, fn_lsR, logfn, lsR_ext=LSR_EXT):
             if l['func'] == 'prepare_one_rec':
                 nf_base = l['nf']
             nf_last = l['nf']
-            ib = l['irec']
+            if 'irec' in l:
+                ib = l['irec']
     except EOFError:
         pass
 

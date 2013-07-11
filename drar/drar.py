@@ -250,7 +250,7 @@ def do_incremental_backup(coll, logext=LOG_EXT, mapext=MAP_EXT,
 
             pp_progress('At (%d%%): %s' % (100 * irec / nr,
                 fn_src + ' -> ' + dst))
-            succ, inf = dbox_upload(apicli, sp, dst)
+            succ, inf = dbox_upload(apicli, sp, dst, retry=100000)
 
             if succ:
                 my_dump({'func': 'dbox_upload', 'rec': rec,
@@ -492,9 +492,10 @@ def dbox_overwrite_check(apicli, dst, retry=5):
         dbox_overwrite_check(apicli, dst, retry=retry - 1)
 
 
-def dbox_upload(apicli, src, dst, retry=5, delay_long=60, delay=5, **kwargs):
+def dbox_upload(apicli, src, dst, retry=10, delay_long=120, delay=30,
+        **kwargs):
     res = []
-    for _ in xrange(retry):
+    while retry > 0:
         r = dbox_upload_once(apicli, src, dst, **kwargs)
         if r[0]:
             return r
@@ -504,6 +505,8 @@ def dbox_upload(apicli, src, dst, retry=5, delay_long=60, delay=5, **kwargs):
             time.sleep(delay_long)
         else:
             time.sleep(delay)
+        retry -= 1
+
     return False, res
 
 
@@ -568,7 +571,7 @@ def dbox_makedirs(apicli, path, retry=5, delay=5):
                 apicli.file_create_folder(path_)
                 set_alarm(0)
                 break
-            except TimeoutError:
+            except Exception:
                 time.sleep(delay)
 
     assert dbox_exists(apicli, path)   # assure the path is made
@@ -590,7 +593,7 @@ def dbox_exists(apicli, path, info=False, retry=5, delay=5):
         # 404: not exists
         if type(e) is rest.ErrorResponse and e.status == 404:
             return False
-        print '\n*** Error: dbox_exists():', e
+        # print '\n*** Error: dbox_exists():', e
         if retry > 0:
             time.sleep(delay)
             return dbox_exists(apicli, path, info=info,
@@ -607,7 +610,7 @@ def dbox_df(apicli, retry=5, delay=5):
                 inf['quota_info']['shared']
     except Exception, e:
         set_alarm(0)
-        print '\n*** Error: dbox_df():', e
+        # print '\n*** Error: dbox_df():', e
         if retry > 0:
             time.sleep(delay)
             return dbox_df(apicli, retry=retry - 1, delay=delay)

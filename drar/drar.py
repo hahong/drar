@@ -639,6 +639,7 @@ def main_cli(args):
         do_incremental_backup(args[0])
     elif len(args) == 3:
         coll, fn_lsR, logfn = args
+        coll.replace(os.sep, '')
         do_recovery(coll, fn_lsR, logfn)
     else:
         print 'Arguments not understood.'

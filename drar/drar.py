@@ -13,6 +13,7 @@ from math import log, log10
 # from functools import wraps
 
 LSR_EXT = '.lsR.lst'
+LSR_EXT_FULL = '.full.lsR.lst'
 REMOTE_PATH = '/AR'
 APP_IDENT_FILE = 'AR_app_ident.txt'
 LARGE_TMP = '/home/hahong/teleport/space/tmp'
@@ -24,28 +25,35 @@ TIMEOUT_LONG = 60 * 10
 
 
 # -- Main worker functions
-def make_lsR(coll, newer=None, find_newer=True, t_slack=100):
+def make_lsR(coll, newer=None, find_newer=True, t_slack=100,
+        fn_lsR_base=None, lsR_ext=LSR_EXT, incl_all=False):
     t0 = time.time()
     coll = coll.replace(os.sep, '')
     bn_lsR = '%s_' % coll
-    fn_lsR_base = '%s%f' % (bn_lsR, t0)
-    fn_lsR = fn_lsR_base + LSR_EXT
-    ext = ''
+    if fn_lsR_base is None:
+        fn_lsR_base = '%s%f' % (bn_lsR, t0)
+    fn_lsR = fn_lsR_base + lsR_ext
+    if not incl_all:
+        opts = r'\( -type f -or -type l \) '
+        opts2 = ''
+    else:
+        opts = ''
+        opts2 = '-dF'
 
     os.chdir(coll)
     # make sure we cd to coll and go back to ..
     try:
         if find_newer:
-            lsR_ = sorted(glob.glob('%s*%s' % (bn_lsR, LSR_EXT)))
+            lsR_ = sorted(glob.glob('%s*%s' % (bn_lsR, lsR_ext)))
             if len(lsR_) > 0:
                 newer = lsR_[-1]
 
         if newer is not None:
-            ext += '-newer %s ' % newer
+            opts += '-newer %s ' % newer
 
         # get list of files to backup
-        os.system(r"find %s/ \( -type f -or -type l \) %s -exec 'ls'"
-                ' --full-time -i {} + > %s' % (coll, ext, fn_lsR))
+        os.system(r"find %s/ %s -exec 'ls'"
+                ' --full-time -i %s {} + > %s' % (coll, opts, opts2, fn_lsR))
         # kludge way of retouching the lsR file's mtime just created
         # for the next incremental backup.
         os.system('touch -d "%s" %s' % (time.ctime(t0 - t_slack), fn_lsR))
@@ -156,6 +164,8 @@ def do_incremental_backup(coll, logext=LOG_EXT, mapext=MAP_EXT,
     # -- collect lsR data and init dropbox space
     if recover is None:
         fn_lsR, bname = make_lsR(coll)
+        make_lsR(coll, find_newer=False, incl_all=True,
+                fn_lsR_base=bname, lsR_ext=LSR_EXT_FULL)
     else:
         fn_lsR = recover['fn_lsR']
         bname = recover['bname']
@@ -164,9 +174,9 @@ def do_incremental_backup(coll, logext=LOG_EXT, mapext=MAP_EXT,
     dstbase = remote_path + '/' + coll + '/' + bname
 
     recs = get_records(fn_lsR)
-    if len(recs) == 0:
-        print '*** No files to backup.  Exiting.'
-        return
+    # if len(recs) == 0:
+    #    print '*** No files to backup.  Exiting.'
+    #    return
 
     # estimated number of depth required to hold all splits
     nfe = get_estimated_filenum(recs)
@@ -281,10 +291,15 @@ def do_incremental_backup(coll, logext=LOG_EXT, mapext=MAP_EXT,
     if ne > 0:
         print '*** There were %d errors logged as: %s' % (ne, fn_log)
     else:
+        fn_lsR_full = fn_lsR.replace(LSR_EXT, LSR_EXT_FULL)
         dbox_upload(apicli, fn_map, dstbase + '/' + os.path.basename(fn_map))
         dbox_upload(apicli, fn_log, dstbase + '/' + os.path.basename(fn_log))
         dbox_upload(apicli, fn_lsR, dstbase + '/' + os.path.basename(fn_lsR),
                 move=False)
+        if os.path.exists(fn_lsR_full):
+            dbox_upload(apicli, fn_lsR_full, dstbase + '/' +
+                    os.path.basename(fn_lsR_full),
+                    move=False)
     print '* Finished:', coll
 
 
@@ -305,7 +320,7 @@ def do_recovery(coll, fn_lsR, logfn, lsR_ext=LSR_EXT):
             nf_last = l['nf']
             if 'irec' in l:
                 ib = l['irec']
-    except EOFError:
+    except:
         pass
 
     n_sp_done = nf_last - nf_base
@@ -415,6 +430,8 @@ def get_estimated_filenum(recs, div=200 * 1024 * 1024, i_blks=5):
 
 
 def get_required_depth(nf, nmax=MAX_N_PER_DIR):
+    if nf <= 0:
+        return 1
     n = int(log(nf) / log(nmax)) + 1
     return n
 
@@ -608,7 +625,7 @@ def dbox_df(apicli, retry=5, delay=5):
         set_alarm(0)
         return inf['quota_info']['quota'] - inf['quota_info']['normal'] - \
                 inf['quota_info']['shared']
-    except Exception, e:
+    except Exception:
         set_alarm(0)
         # print '\n*** Error: dbox_df():', e
         if retry > 0:

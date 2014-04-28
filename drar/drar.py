@@ -10,6 +10,9 @@ import sys
 import signal
 from dropbox import client, session, rest
 from math import log, log10
+from socket import getfqdn
+import smtplib
+from email.mime.text import MIMEText
 # from functools import wraps
 
 LSR_EXT = '.lsR.lst'
@@ -22,6 +25,17 @@ LOG_EXT = '.log.pkl'
 MAP_EXT = '.map.txt'
 TIMEOUT_SHORT = 45
 TIMEOUT_LONG = 60 * 10
+
+BATCHMODE = os.environ.get('DRAR_BATCHMODE') == '1'
+BATCHMODE_LOCK = os.environ.get('DRAR_BATCHMODE_LOCK', 'tmp/draru.lock')
+EMAIL_TO = os.environ.get('DRAR_EMAIL_TO')
+EMAIL_FROM = os.environ.get('DRAR_EMAIL_FROM', 'root@' + getfqdn())
+if BATCHMODE:
+    print '*** drar: batch mode with:'
+    print '    BATCHMODE_LOCK =', BATCHMODE_LOCK
+    print '    EMAIL_TO =', EMAIL_TO
+    print '    EMAIL_FROM =', EMAIL_FROM
+    print
 
 
 # -- Main worker functions
@@ -126,8 +140,7 @@ def prepare_one_rec(coll, recdesc, arname=None, wd='tmp', recs=None,
             # return False, '*** Not enough space: ' + fn
             set_alarm(0)
             print '*** Not enough space.  Need free space on:', large_tmp
-            print '*** User action required.  Press enter after done.'
-            raw_input()
+            waituser()
             if my_freespace(large_tmp) < fsz:
                 return False, '*** Not enough space: ' + fn
         fullwd = large_tmp
@@ -254,8 +267,8 @@ def do_incremental_backup(coll, logext=LOG_EXT, mapext=MAP_EXT,
                 print '   - nf: ', nf
                 print '   - sp: ', sp
                 print '   - dst:', dst
-                print '*** Press ^C to halt.  Otherwise, press enter.'
-                raw_input()
+                print '*** Press ^C to halt.'
+                waituser()
                 confirm_once = False
 
             pp_progress('At (%d%%): %s' % (100 * irec / nr,
@@ -329,8 +342,8 @@ def do_recovery(coll, fn_lsR, logfn, lsR_ext=LSR_EXT):
     # assert log_last['status'] == 'failed'   # not needed
     print '* Last record:'
     print log_last
-    print '*** Press ^C to halt.  Otherwise, press enter.'
-    raw_input()
+    print '*** Press ^C to halt.'
+    waituser()
 
     # -- make recovery point
     if log_last['func'] == 'prepare_one_rec' and \
@@ -375,6 +388,50 @@ def _handle_timeout(signum, frame):
 def set_alarm(t=TIMEOUT_SHORT):
     signal.signal(signal.SIGALRM, _handle_timeout)
     signal.alarm(t)
+
+
+def sendeml(emlto, emlfrom, msg, title, host='localhost'):
+    try:
+        emlto = emlto.replace(' ', '')
+        msg = MIMEText(msg)
+        msg['Subject'] = title
+        msg['From'] = emlfrom
+        msg['To'] = emlto
+        s = smtplib.SMTP('localhost')
+        s.sendmail(emlfrom, emlto.split(','), msg.as_string())
+        s.quit()
+    except Exception, e:
+        print '*** sendeml():', e
+
+
+def waituser(batchmode=BATCHMODE, interval=1, lockfn=BATCHMODE_LOCK,
+        emlto=EMAIL_TO, emlfrom=EMAIL_FROM):
+    if emlto is not None:
+        if batchmode:
+            msg = 'See the log and delete the ' + \
+                'lock file "%s" once every intervention is done.'
+            msg = msg % lockfn
+        else:
+            msg = 'See the console output for details.'
+
+        sendeml(emlto, emlfrom, msg, '[drar] user intervention needed')
+
+    if not batchmode:
+        print '*** User action required.  Press enter after done.'
+        raw_input()
+    else:
+        try:
+            fp = open(lockfn, 'wt')
+            fp.write('drar: waituser()')
+            fp.close()
+        except Exception, e:
+            print '*** waituser():', e
+        print '*** User action required.  Remove %s after done.' % lockfn
+        while True:
+            time.sleep(interval)
+            if not os.path.exists(lockfn):
+                print '*** waituser(): proceeding...'
+                break
 
 
 # from: http://stackoverflow.com/questions/2281850/ ...
@@ -503,8 +560,7 @@ def dbox_overwrite_check(apicli, dst, retry=5):
         return
     set_alarm(0)
     print '\n*** File exists:', dst
-    print '*** User action required.  Press enter after done.'
-    raw_input()
+    waituser()
     if retry > 0:
         dbox_overwrite_check(apicli, dst, retry=retry - 1)
 
@@ -536,8 +592,7 @@ def dbox_upload_once(apicli, src, dst, halg=hashlib.sha224,
             set_alarm(0)
             print '\n*** Not enough dropbox space.  Need %db for: %s' % \
                     (fsz, src)
-            print '*** User action required.  Press enter after done.'
-            raw_input()
+            waituser()
             if dbox_df(apicli) <= fsz:
                 return False, '*** Not enough dropbox space: ' + src
 

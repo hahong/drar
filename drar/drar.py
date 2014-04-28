@@ -449,7 +449,11 @@ def waituser(batchmode=BATCHMODE, interval=1, lockfn=BATCHMODE_LOCK,
 #     return decorator
 
 
-def pp_progress(s, l=90, c=20, el=' ... '):
+def pp_progress(s, l=90, c=20, el=' ... ', batchmode=BATCHMODE):
+    if batchmode:
+        print s
+        return
+
     n = len(s)
     if n > l:
         b = l - c + len(el)
